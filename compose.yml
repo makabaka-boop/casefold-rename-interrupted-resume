@@ -1,0 +1,11 @@
+services:
+  planner:
+    build: .
+    container_name: rename-planner
+    # Dry-run only: the container gets a read-only root filesystem and sees
+    # nothing but the JSON manifest, mounted read-only. It never touches the
+    # host's files; the plan is printed to stdout.
+    read_only: true
+    volumes:
+      - ./manifest.json:/data/manifest.json:ro
+    command: ["-f", "/data/manifest.json"]

@@ -1,0 +1,9 @@
+{
+  "files": ["a.txt", "b.txt", "c.txt", "draft.md"],
+  "renames": [
+    {"source": "a.txt", "target": "b.txt"},
+    {"source": "b.txt", "target": "a.txt"},
+    {"source": "c.txt", "target": "C.TXT"},
+    {"source": "draft.md", "target": "final.md"}
+  ]
+}
