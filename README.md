@@ -74,6 +74,61 @@ Output:
 }
 ```
 
+## Interrupt recovery (`-resume`)
+
+If the batch was interrupted mid-run, the operator must confirm that the names
+seen on the drive really correspond to one of this plan's execution prefixes
+before continuing or rolling back. Resume mode takes the **original**
+manifest, the number of steps already completed, and the **exact** file names
+currently observed:
+
+```sh
+./planner -resume -f state.json
+# state.json adds "done" and "observed" to the original manifest:
+# {
+#   "files": ["a.txt", "b.txt"],
+#   "renames": [{"source": "a.txt", "target": "b.txt"},
+#               {"source": "b.txt", "target": "a.txt"}],
+#   "done": 1,
+#   "observed": ["__rename_tmp_0__", "b.txt"]
+# }
+```
+
+`done`/`observed` may instead be supplied as flags (`-done 1 -observed
+'__rename_tmp_0__,b.txt'`).
+
+What it does, entirely in memory (no file system access):
+
+1. Rebuilds the **same deterministic plan** from the original manifest — the
+   temp name is whatever that plan chose; it is never reselected to fit the
+   observation.
+2. Replays the first `done` steps on a case-insensitive occupancy table that
+   refuses to overwrite.
+3. Compares the observed set against the predicted prefix layout **twice**:
+   normalized occupancy (foreign/missing) **and** exact case (case drift).
+4. Only on an exact match does it print `forward` (the untouched plan tail)
+   and `rollback` (the inverse of the executed prefix only). Replaying either
+   sequence from the observed layout never overwrites: `forward` finishes the
+   batch, `rollback` restores the original names.
+
+This covers the critical *parked* state — the file that has just moved to the
+temp name. For a swap/`N`-cycle the tail first vacates a real name, then loads
+the parked file; the safe undo is the single move `temp → parked source`. For a
+case-only rename (length-1 cycle) there is nobody else to vacate, so the tail
+loads the parked file straight to its final name.
+
+On any discrepancy the report is `{"status": "mismatch", "diffs": [...]}`, the
+process exits non-zero, and **no executable actions are emitted**. Each diff is
+one of:
+
+- `foreign` — an observed name the prefix cannot have produced;
+- `missing` — a name the prefix predicts that is not observed;
+- `case-drift` — normalized name matches but the exact spelling differs
+  (including a temp slot held with different case).
+
+A wrong `done` count manifests as foreign+missing pairs; a stranger occupying
+the expected temp index is reported, never worked around.
+
 ## Docker / Compose
 
 The container is strictly dry-run: read-only root filesystem, and only the
@@ -101,3 +156,12 @@ go test ./...
 - Targeted unit tests for chain reversal, 2- and 3-node cycles, case-only
   renames, mixed-case cycles, temp-name collision skipping, component
   ordering, the 200-file limit, and every validation error.
+- **Interrupt recovery**: every interruption point (cuts 0…N) of a chain, a
+  long chain, a 2-node swap cycle, a 3-node cycle, a case-only rename, and a
+  multi-component plan is rebuilt and replayed — the returned `forward` tail
+  must finish the batch and `rollback` must restore the original layout
+  without overwriting. The parked-at-temp cuts (including the file sitting at
+  the temp name across components) are checked explicitly for both continue
+  and undo. Mismatch tests cover foreign files, missing files, case drift on
+  results/bystanders/temp names, wrong temp index (no reselection), wrong
+  step counts, and combined discrepancies.
