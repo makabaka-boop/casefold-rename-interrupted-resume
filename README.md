@@ -74,6 +74,68 @@ Output:
 }
 ```
 
+## Interrupt recovery (`-resume`)
+
+If a batch was interrupted halfway, run with `-resume`. The input adds the
+number of steps already executed and the **exact** file names observed on the
+drive:
+
+```json
+{
+  "files": ["a.txt", "b.txt"],
+  "renames": [
+    {"source": "a.txt", "target": "b.txt"},
+    {"source": "b.txt", "target": "a.txt"}
+  ],
+  "done": 1,
+  "observed": ["b.txt", "__rename_tmp_0__"]
+}
+```
+
+```sh
+./planner -resume -f resume.json
+```
+
+Recovery:
+
+1. Rebuilds the identical deterministic plan from the original manifest (the
+   temp name is **never reselected** — it comes from the rebuilt plan).
+2. Replays the first `done` steps on an in-memory case-insensitive occupancy
+   table, without touching the file system.
+3. Accepts the observation only when it matches the expected layout both in
+   case-folded occupancy **and** in exact casing.
+
+On a match it prints `remaining` (the unexecuted forward moves, for
+continuing) and `reverse` (inverse moves for the executed prefix only, for a
+safe partial withdrawal — this equals the tail of the original `rollback`):
+
+```json
+{
+  "match": true,
+  "done": 1,
+  "total": 3,
+  "remaining": [
+    {"from": "b.txt", "to": "a.txt"},
+    {"from": "__rename_tmp_0__", "to": "b.txt"}
+  ],
+  "reverse": [
+    {"from": "__rename_tmp_0__", "to": "a.txt"}
+  ]
+}
+```
+
+On any discrepancy — a foreign file, a missing name, case drift, or a temp
+slot occupied by the wrong temp name (e.g. `__rename_tmp_1__` instead of
+`__rename_tmp_0__`) — `match` is `false`, `diffs` reports each slot
+(`missing` / `foreign` / `case-drift`, with `temp: true` for temp-related
+rows), no executable actions are emitted, and the process exits non-zero.
+This includes the critical case where a file is found still parked at its
+temp name: continuing and withdrawing are both offered, but only when the
+parked temp name is exactly the one the rebuilt plan used.
+
+Without `-resume`, output is byte-identical to before; recovery is a separate
+mode and the original planner output is unchanged.
+
 ## Docker / Compose
 
 The container is strictly dry-run: read-only root filesystem, and only the
@@ -101,3 +163,11 @@ go test ./...
 - Targeted unit tests for chain reversal, 2- and 3-node cycles, case-only
   renames, mixed-case cycles, temp-name collision skipping, component
   ordering, the 200-file limit, and every validation error.
+- **Interrupt recovery** walks every interrupt point (`0..len(steps)`) of a
+  chain, a 2-node swap, a 3-node cycle, a case-only rename, and mixed
+  components: the rebuilt prefix must match observed names exactly, the
+  remaining steps must continue to the final mapping, and the prefix-only
+  reverse steps must restore the original layout — with special focus on the
+  point where the file sits parked at its temp name. Mismatch tests cover
+  foreign files, missing files, case drift, and wrong-index temp occupancy;
+  each reports diffs and emits no actions.
